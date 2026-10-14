@@ -15,10 +15,10 @@ After the scan, type `YES` to clean up. dupfind then goes through the sets of fo
 
 ```
 [1/40]  2.8 GB  232 extra copies
-   1) Wedding/Wedding Raw
-   2) Wedding/Wedding Raw/duplicates
+   1) Photos/Originals
+   2) Photos/Originals/duplicates
 Keep which folder? 1-2 (or several, like 1,3), Enter = skip, Q = done: 1
-   Keeping Wedding/Wedding Raw. 232 files (2.8 GB) will move.
+   Keeping Photos/Originals. 232 files (2.8 GB) will move.
    Chosen so far: 1 set, 232 files (2.8 GB). Type Q at the next set to move just these.
 ```
 
@@ -104,11 +104,11 @@ dupfind scan ~ --min-size 1M --csv home.csv
 ```bash
 cd /Volumes/T7
 
-# Keep "Wedding Raw", move the copies found inside its "duplicates" subfolder
-dupfind clean --keep "Wedding/Wedding Raw" --remove "Wedding/Wedding Raw/duplicates"
+# Keep "Originals", move the copies found inside its "duplicates" subfolder
+dupfind clean --keep "Photos/Originals" --remove "Photos/Originals/duplicates"
 
 # Keep two folders, move their copies from anywhere on the drive
-dupfind clean . --keep "Wedding/Video Short" --keep "Wedding/Wedding Raw"
+dupfind clean . --keep "Photos/Edited" --keep "Photos/Originals"
 ```
 
 | Option | Meaning |
@@ -123,7 +123,7 @@ dupfind clean . --keep "Wedding/Video Short" --keep "Wedding/Wedding Raw"
 Before asking `YES`, it shows how many copies would move from each folder. Then for each file:
 
 1. It is compared byte by byte with its kept copy; a file that changed since the scan is skipped.
-2. It moves into `_TO_DELETE` with its folder path, for example `_TO_DELETE/Wedding/Wedding Raw/duplicates/a.jpg`.
+2. It moves into `_TO_DELETE` with its folder path, for example `_TO_DELETE/Photos/Originals/duplicates/a.jpg`.
 3. The move is logged in `_TO_DELETE/dupfind-log-<time>.tsv`.
 
 A file with no copy in a keep folder is never moved. To undo, move a file from `_TO_DELETE` back to the same path.
@@ -180,3 +180,7 @@ Hashing uses xxh3-128 on all CPU cores. Hard links count as one file.
 | `src/clean.rs` | `clean` and `purge` |
 | `src/empty.rs` | `empty-dirs` |
 | `src/util.rs` | Shared helpers |
+
+## License
+
+[MIT](LICENSE)

@@ -48,7 +48,7 @@ enum Cmd {
     },
 
     /// Move copies of files in a --keep folder into _TO_DELETE. Asks before moving.
-    /// Example: dupfind clean --keep "Wedding Raw" --remove "Wedding Raw/duplicates"
+    /// Example: dupfind clean --keep "Originals" --remove "Originals/duplicates"
     Clean(clean::CleanOpts),
 
     /// Permanently delete a stage folder created by `clean`. Asks first.

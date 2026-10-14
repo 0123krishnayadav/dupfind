@@ -28,7 +28,7 @@ fn ask(prompt: &str) -> String {
 }
 
 /// A folder dragged in from Finder arrives quoted, or with a backslash before each
-/// special character: `/Volumes/T7/Tejas\ \(1\)`.
+/// special character: `/Volumes/T7/Trip\ \(1\)`.
 fn typed_path(s: &str) -> PathBuf {
     let s = s.trim().trim_matches(|c| c == '\'' || c == '"');
     let mut out = String::new();
