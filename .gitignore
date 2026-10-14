@@ -1,0 +1,15 @@
+# Rust build output
+/target
+
+# dupfind output: scan reports and clean logs list real file paths
+*.csv
+dupfind-clean-*.log
+
+# macOS metadata
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp

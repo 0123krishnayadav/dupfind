@@ -1,0 +1,15 @@
+[package]
+name = "dupfind"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+jwalk = "0.8"
+rayon = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
