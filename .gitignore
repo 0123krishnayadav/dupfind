@@ -3,7 +3,7 @@
 
 # dupfind output: scan reports and clean logs list real file paths
 *.csv
-dupfind-clean-*.log
+dupfind-log-*.tsv
 
 # macOS metadata
 .DS_Store

@@ -26,6 +26,10 @@ pub fn parse_size(s: &str) -> Result<u64, String> {
         .map_err(|e| format!("bad size '{s}': {e}"))
 }
 
+pub fn files_word(n: usize) -> String {
+    if n == 1 { "1 file".to_string() } else { format!("{n} files") }
+}
+
 pub fn human(n: u64) -> String {
     let mut n = n as f64;
     for unit in ["B", "KB", "MB", "GB", "TB"] {
@@ -59,7 +63,7 @@ pub fn confirm(prompt: &str, word: &str) -> bool {
     io::stderr().flush().ok();
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line).ok();
-    line.trim() == word
+    line.trim().eq_ignore_ascii_case(word)
 }
 
 /// Byte-by-byte comparison of two files.

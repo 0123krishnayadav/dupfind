@@ -46,8 +46,8 @@ const SKIP_DIR_NAMES: &[&str] = &[
 
 #[derive(Args)]
 pub struct ScanOpts {
-    /// Folders or drives to scan, e.g. ~ or /Volumes/T7
-    #[arg(required = true)]
+    /// Folders or drives to scan, e.g. ~ or /Volumes/T7 [default: current folder]
+    #[arg(default_value = ".")]
     pub roots: Vec<PathBuf>,
 
     /// Ignore files smaller than this (e.g. 4K, 1M, 2G)
@@ -86,7 +86,12 @@ fn walk(roots: &[PathBuf], min_size: u64, excludes: &HashSet<PathBuf>) -> Vec<(P
                     let ft = entry.file_type;
                     let name = entry.file_name.to_string_lossy();
                     if ft.is_dir() {
-                        if SKIP_DIR_NAMES.contains(&name.as_ref()) || excludes.contains(&entry.path()) {
+                        // A stage folder from `clean` holds copies already set aside.
+                        let path = entry.path();
+                        if SKIP_DIR_NAMES.contains(&name.as_ref())
+                            || excludes.contains(&path)
+                            || path.join(".dupfind-stage").exists()
+                        {
                             entry.read_children_path = None;
                         }
                     } else if ft.is_file() && !is_metadata(&name) {

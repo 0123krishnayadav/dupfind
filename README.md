@@ -1,15 +1,44 @@
 # dupfind
 
-Find duplicate files by content on any folder or drive, and clean them up without ever losing the last copy.
+Find duplicate files on any folder or drive and remove the extra copies without ever losing the last one. Files are compared by content, so renamed copies are found too.
 
-A cleanup is four commands, run in order. Only the last two delete anything, and both ask first.
+## The easy way
 
-| Step | Command | What it does | Changes files? |
-| --- | --- | --- | --- |
-| 1 | `dupfind scan` | Lists duplicates and which folders share them | Never |
-| 2 | `dupfind clean` | Moves copies that have a twin in a folder you keep into `_TO_DELETE` | Moves only, after you type `YES` |
-| 3 | `dupfind purge` | Permanently deletes the `_TO_DELETE` folder | Deletes, after you type `DELETE` |
-| 4 | `dupfind empty-dirs` | Removes folders left empty | Deletes empty folders, after you type `YES` |
+Open Terminal and run either:
+
+```bash
+dupfind                      # asks which folder or drive to check
+dupfind scan /Volumes/T7     # shows the folders that share copies, then offers to clean up
+```
+
+After the scan, type `YES` to clean up. dupfind then goes through the sets of folders holding the same files, biggest first, and asks which folder to keep:
+
+```
+[1/40]  2.8 GB  232 extra copies
+   1) Wedding/Wedding Raw
+   2) Wedding/Wedding Raw/duplicates
+Keep which folder? 1-2 (or several, like 1,3), Enter = skip, Q = done: 1
+   Keeping Wedding/Wedding Raw. 232 files (2.8 GB) will move.
+   Chosen so far: 1 set, 232 files (2.8 GB). Type Q at the next set to move just these.
+```
+
+| You type | What happens |
+| --- | --- |
+| A number, like `2` | Keep that folder. The copies in the set's other folders will move. |
+| Several numbers, like `1,3` | Keep all of those folders. Only the copies in the others will move. |
+| Enter | Skip this set and leave it as it is. |
+| `Q` (or any other text) | Stop choosing and move just the sets chosen so far. |
+
+A set with only one folder holds several copies of the same file side by side. Typing `1` keeps the copy with the shortest name, usually the original (`x.jpg` over `x (1).jpg` or `x copy.jpg`), and moves the rest.
+
+Then it shows what you chose in total and asks once more:
+
+1. **Type `YES`** to move the extra copies into `_TO_DELETE` inside the folder you scanned. Each file is checked byte by byte against the copy you keep first.
+2. **Look through `_TO_DELETE`?** It opens in Finder.
+3. **Type `DELETE`** to delete `_TO_DELETE` and free the space, or anything else to keep it for now.
+4. **Remove folders that are now empty?** Type `YES` to remove them.
+
+Nothing moves without `YES`, and nothing is deleted without `DELETE` (capitals or not). Any other answer cancels that step. When `scan` runs from a script or its output goes to a file, it only lists and never asks.
 
 ## Install
 
@@ -17,105 +46,91 @@ Needs [Rust](https://rustup.rs).
 
 ```bash
 cargo install --path .
-dupfind --help
 ```
 
-This puts `dupfind` in `~/.cargo/bin`, so it runs from any folder. Add `--help` after any command for its options.
+This puts `dupfind` in `~/.cargo/bin`, so it runs from any folder.
 
-## Step 1: Scan (read-only)
+## Commands, for scripts and advanced use
+
+Every command works on the current folder unless you name one, so you can `cd /Volumes/T7` and use short paths. Add `--help` after any command for all options.
+
+### `dupfind scan`: see what is duplicated
+
+Scanning only reads files. When you run it yourself, it then offers the cleanup above; press Enter to just exit.
 
 ```bash
-dupfind scan /Volumes/T7 --folders              # which folders share copies
-dupfind scan /Volumes/T7                        # every duplicate file, biggest first
-dupfind scan ~ --min-size 1M --csv home.csv     # home folder, files 1 MB+, saved as CSV
+dupfind scan /Volumes/T7                  # folders that hold the same files
+dupfind scan /Volumes/T7 --files          # every duplicate file
+dupfind scan ~ --min-size 1M --csv home.csv
 ```
 
 | Option | What it does |
 | --- | --- |
-| `--folders` | Shows sets of folders holding the same files, by wasted space |
-| `--min-size 1M` | Skips smaller files; much faster, still finds most wasted space |
-| `--csv <file>` | Also saves every duplicate to a CSV (never overwrites an existing file) |
+| `--files` | Lists every duplicate file instead of the folder summary |
+| `--min-size 1M` | Skips smaller files: much faster |
+| `--csv <file>` | Saves every duplicate to a CSV (never overwrites one) |
 | `--exclude <folder>` | Skips a folder (repeatable) |
-| `--threads <n>` | Limits CPU cores used |
 
-Example `--folders` output:
-
-```
-  2.8 GB wasted, 232 files
-     T7/Wedding/Wedding Raw
-     T7/Wedding/Wedding Raw/duplicates
-```
-
-Pick the folder in each block you want to keep; it becomes `--keep` in step 2.
-
-Always skipped: empty files, macOS `._` and `.DS_Store` files, Trash folders, `.git`, `node_modules` and macOS system folders.
-
-## Step 2: Clean (moves copies, deletes nothing)
-
-Every file inside a `--keep` folder stays. Each identical copy found elsewhere moves into a staging folder. A file with no copy in a keep folder is never touched.
+### `dupfind clean`: move the extra copies into `_TO_DELETE`
 
 ```bash
-# Preview: what would move, by folder
-dupfind clean /Volumes/T7 \
-  --keep "/Volumes/T7/Wedding/Video Short" \
-  --keep "/Volumes/T7/Wedding/Wedding Raw" \
-  --protect "/Volumes/T7/Mac Copy/Documents/Final Selected" \
-  --dry-run
+cd /Volumes/T7
 
-# Run the same command without --dry-run, then type YES
+# Keep "Wedding Raw", move the copies found inside its "duplicates" subfolder
+dupfind clean --keep "Wedding/Wedding Raw" --remove "Wedding/Wedding Raw/duplicates"
+
+# Keep two folders, move their copies from anywhere on the drive
+dupfind clean . --keep "Wedding/Video Short" --keep "Wedding/Wedding Raw"
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--keep <folder>` | Files here are kept, subfolders included. Repeatable. Required. |
-| `--protect <folder>` | Files here never move, though it is not a keep folder. |
-| `--stage <folder>` | Where copies go. Default `<scanned folder>/_TO_DELETE`. Must be on the same drive. |
-| `--dry-run` | Show the plan only. |
+| `--keep <folder>` | Files here stay (subfolders too, unless named in `--remove`). Required, repeatable. |
+| `--remove <folder>` | Move copies only out of this folder. It may sit inside a keep folder; the deeper folder wins. |
+| `<folders>` | Where to look for copies. Default: just the `--keep` and `--remove` folders. Without `--remove`, copies anywhere in these folders outside the keep folders move. |
+| `--protect <folder>` | Files here never move. |
+| `--stage <folder>` | Where copies go. Default: `_TO_DELETE` at the top of the drive, or in your home folder. |
+| `--dry-run` | Show every file that would move, without asking or moving. |
 
-When you type `YES`:
+Before asking `YES`, it shows how many copies would move from each folder. Then for each file:
 
-1. Each copy is compared byte by byte with its kept twin; a file that changed since the scan is skipped.
-2. It moves into `_TO_DELETE` with its folder path, so `T7/a/b.jpg` lands at `_TO_DELETE/a/b.jpg`.
-3. Every move is logged to `dupfind-clean-<timestamp>.log` in the current folder.
-4. At the end, every moved file is checked to still have its kept copy.
+1. It is compared byte by byte with its kept copy; a file that changed since the scan is skipped.
+2. It moves into `_TO_DELETE` with its folder path, for example `_TO_DELETE/Wedding/Wedding Raw/duplicates/a.jpg`.
+3. The move is logged in `_TO_DELETE/dupfind-log-<time>.tsv`.
 
-Anything else, including lowercase `yes`, cancels. To undo, move a file from `_TO_DELETE` back to the same path.
+A file with no copy in a keep folder is never moved. To undo, move a file from `_TO_DELETE` back to the same path.
 
-## Step 3: Purge (frees the space)
-
-```bash
-open /Volumes/T7/_TO_DELETE            # check first
-dupfind purge /Volumes/T7/_TO_DELETE   # type DELETE
-```
-
-This skips the Trash and cannot be undone. It refuses any folder that `clean` did not create, which `clean` marks with a hidden `.dupfind-stage` file.
-
-## Step 4: Remove empty folders
+### `dupfind purge`: free the space
 
 ```bash
-dupfind empty-dirs /Volumes/T7 --dry-run   # list only
-dupfind empty-dirs /Volumes/T7             # list, then type YES
+dupfind purge /Volumes/T7/_TO_DELETE      # or just `dupfind purge` from /Volumes/T7
 ```
 
-| Mode | A folder counts as empty when |
-| --- | --- |
-| default | It has no files at all, hidden ones included |
-| `--include-metadata` | Its only files are macOS `.DS_Store` / `._` files, removed with it |
+Type `DELETE` to confirm. This skips the Trash and cannot be undone. It refuses any folder that `clean` did not create, which `clean` marks with a hidden `.dupfind-stage` file.
 
-Never removed: the folder you name, `.git` folders, `.app` bundles, Photos libraries and drive system folders (`.Trashes`, `.Spotlight-V100`, `.fseventsd`, `$RECYCLE.BIN`). Each folder is removed with a call that fails if it is not empty.
+### `dupfind empty-dirs`: remove empty folders
+
+```bash
+dupfind empty-dirs /Volumes/T7 --dry-run  # list only
+dupfind empty-dirs /Volumes/T7            # list, then type YES
+```
+
+By default a folder counts as empty only if it has no files at all, hidden files included. With `--include-metadata`, folders holding only macOS `.DS_Store` / `._` files count too, and those files are removed with them.
+
+Never removed: `.git` folders, `.app` bundles, Photos libraries and drive system folders (`.Trashes`, `.Spotlight-V100`, `.fseventsd`, `$RECYCLE.BIN`).
 
 ## Safety
 
-- Nothing is deleted without typing `YES` or `DELETE` exactly.
-- `clean` only moves a file whose byte-identical twin stays in a keep folder, so one copy always remains.
-- `.git`, `.app` and `.photoslibrary` contents are never moved or deleted.
-- CSV and log files are never overwritten.
+- One copy always stays: a file only moves when a byte-identical copy remains in the folder you keep.
+- Nothing moves without `YES` and nothing is deleted without `DELETE`.
+- Files inside `.git`, `.app` and Photos libraries (`.photoslibrary`) never move.
+- CSV files are never overwritten.
 
 ## Good to know
 
 - **GB in Terminal vs Disk Utility:** `df -h` counts 1 GB as 1,073,741,824 bytes; Disk Utility counts 1,000,000,000. Use `df -H` to match Disk Utility.
-- **`._` files:** macOS creates them on exFAT drives. They are skipped and are not real duplicates.
-- **Photos library:** clean duplicates inside it with the Photos app, not dupfind.
+- **`._` files:** macOS creates them on exFAT drives. They are ignored and are not real duplicates.
+- **Photos library:** clean duplicates inside it with the Photos app.
 - **Whole Mac:** `sudo dupfind scan / --min-size 1M`. `sudo` only lets it read protected folders.
 - **Backups:** after cleanup one copy remains. Keep important files on a second drive or in the cloud too.
 
@@ -125,26 +140,15 @@ Duplicates are found in three stages, each only looking at files that survived t
 
 1. Parallel directory walk, files grouped by size (no file reads).
 2. Hash of the first and last 64 KB of same-size files.
-3. Full hash of files still matching.
+3. Full hash of the files still matching.
 
 Hashing uses xxh3-128 on all CPU cores. Hard links count as one file.
 
 | File | Contents |
 | --- | --- |
 | `src/main.rs` | Command-line interface |
+| `src/wizard.rs` | Guided mode |
 | `src/scan.rs` | Finding duplicates, reports, CSV |
 | `src/clean.rs` | `clean` and `purge` |
 | `src/empty.rs` | `empty-dirs` |
 | `src/util.rs` | Shared helpers |
-
-## Quick reference
-
-| I want to | Command |
-| --- | --- |
-| See which folders share copies | `dupfind scan <folder> --folders` |
-| List every duplicate | `dupfind scan <folder>` |
-| Save to CSV | `dupfind scan <folder> --csv <new-file>.csv` |
-| Preview a cleanup | `dupfind clean <folder> --keep "<keep>" --dry-run` |
-| Run the cleanup | same without `--dry-run`, type `YES` |
-| Free the space | `dupfind purge <folder>/_TO_DELETE`, type `DELETE` |
-| Remove empty folders | `dupfind empty-dirs <folder>`, type `YES` |

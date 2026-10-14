@@ -4,7 +4,8 @@
 //! `clean` created (it carries a marker file).
 
 use crate::scan::{self, ScanOpts};
-use crate::util::{absolute, confirm, human, is_inside, is_managed_bundle, same_content};
+use crate::util::{absolute, confirm, files_word, human, is_inside, is_managed_bundle, parse_size, same_content};
+use clap::Args;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Write};
@@ -13,11 +14,54 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const MARKER: &str = ".dupfind-stage";
+const STAGE_NAME: &str = "_TO_DELETE";
 
-struct Move {
-    src: PathBuf,
-    keeper: PathBuf,
-    size: u64,
+#[derive(Args)]
+pub struct CleanOpts {
+    /// Extra folders to look for copies in [default: the current folder when there is no --remove]
+    pub folders: Vec<PathBuf>,
+
+    /// Folder whose files are kept (repeatable). Its subfolders too, unless named in --remove.
+    #[arg(long, required = true)]
+    pub keep: Vec<PathBuf>,
+
+    /// Move copies only out of this folder (repeatable). May sit inside a --keep folder.
+    /// Without --remove, copies anywhere outside the keep folders are moved.
+    #[arg(long)]
+    pub remove: Vec<PathBuf>,
+
+    /// Folder whose files never move (repeatable). .git, .app and Photos libraries never do.
+    #[arg(long)]
+    pub protect: Vec<PathBuf>,
+
+    /// Where copies are moved to [default: _TO_DELETE at the top of the drive, or in your home folder]
+    #[arg(long)]
+    pub stage: Option<PathBuf>,
+
+    /// Ignore files smaller than this (e.g. 4K, 1M, 2G)
+    #[arg(long, default_value = "1", value_parser = parse_size)]
+    pub min_size: u64,
+
+    /// Folder to skip while searching (repeatable)
+    #[arg(long)]
+    pub exclude: Vec<PathBuf>,
+
+    /// Show the plan and every file, without asking or moving anything
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+pub(crate) struct Move {
+    pub src: PathBuf,
+    pub keeper: PathBuf,
+    pub size: u64,
+}
+
+#[derive(PartialEq)]
+enum Role {
+    Keep,
+    Remove,
+    Other,
 }
 
 fn err(msg: String) -> io::Error {
@@ -25,57 +69,112 @@ fn err(msg: String) -> io::Error {
 }
 
 /// A copy is never moved if it sits inside a managed bundle (.git, .app, Photos library).
-fn in_managed_bundle(p: &Path) -> bool {
+pub(crate) fn in_managed_bundle(p: &Path) -> bool {
     p.components().any(|c| is_managed_bundle(&c.as_os_str().to_string_lossy()))
 }
 
-/// Path inside the stage folder: relative to the scanned folder, so
-/// /Volumes/T7/a/b.jpg becomes _TO_DELETE/a/b.jpg. With several scanned folders,
-/// each one gets its own subfolder named after it.
-fn staged_name(src: &Path, roots: &[PathBuf]) -> PathBuf {
-    for r in roots {
-        if let Ok(rel) = src.strip_prefix(r) {
-            return match (roots.len(), r.file_name()) {
-                (1, _) | (_, None) => rel.to_path_buf(),
-                (_, Some(name)) => Path::new(name).join(rel),
-            };
-        }
+/// The deepest named folder decides: with --keep A and --remove A/dups, A/dups/x is Remove.
+fn role(p: &Path, keep: &[PathBuf], remove: &[PathBuf]) -> Role {
+    let depth = |dirs: &[PathBuf]| {
+        dirs.iter()
+            .filter(|d| p.starts_with(d) && p != d.as_path())
+            .map(|d| d.components().count())
+            .max()
+    };
+    match (depth(keep), depth(remove)) {
+        (Some(k), Some(r)) if r > k => Role::Remove,
+        (Some(_), _) => Role::Keep,
+        (None, Some(_)) => Role::Remove,
+        (None, None) => Role::Other,
     }
-    src.strip_prefix("/").unwrap_or(src).to_path_buf()
 }
 
-pub fn clean(opts: &ScanOpts, keep: &[PathBuf], protect: &[PathBuf], stage: Option<&Path>, dry_run: bool) -> io::Result<()> {
-    let keep: Vec<PathBuf> = keep.iter().map(|k| absolute(k)).collect();
-    for k in &keep {
-        if !k.is_dir() {
-            return Err(err(format!("keep folder not found: {}", k.display())));
+/// `_TO_DELETE` in the home folder for files under it, else at the top of the drive,
+/// so it is on the same drive (moves are instant) and outside the folders being cleaned.
+pub(crate) fn default_stage(first: &Path) -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if first.starts_with(&home) {
+            return home.join(STAGE_NAME);
         }
     }
-    let protect: Vec<PathBuf> = protect.iter().map(|p| absolute(p)).collect();
-    let stage = absolute(stage.unwrap_or(&opts.roots[0].join("_TO_DELETE")));
-    if keep.iter().any(|k| stage.starts_with(k) || k.starts_with(&stage)) {
-        return Err(err(format!("stage folder {} overlaps a keep folder", stage.display())));
+    // Climb while still on the same drive and in folders owned by you (system folders are not).
+    let me = std::env::var_os("HOME").and_then(|h| fs::metadata(h).ok()).map(|m| m.uid());
+    let owned_here = |p: &Path, dev: u64| fs::metadata(p).map(|m| m.dev() == dev && Some(m.uid()) == me).unwrap_or(false);
+    let dev = fs::metadata(first).map(|m| m.dev()).unwrap_or(0);
+    let mut top = first.to_path_buf();
+    while let Some(parent) = top.parent() {
+        if !owned_here(parent, dev) {
+            break;
+        }
+        top = parent.to_path_buf();
     }
+    top.join(STAGE_NAME)
+}
 
-    let roots: Vec<PathBuf> = opts.roots.iter().map(|r| absolute(r)).collect();
-    let groups = scan::find_duplicates(opts, std::slice::from_ref(&stage));
+/// Path relative to `base` for display and for the layout inside the stage folder.
+pub(crate) fn rel<'a>(p: &'a Path, base: &Path) -> &'a Path {
+    p.strip_prefix(base).unwrap_or_else(|_| p.strip_prefix("/").unwrap_or(p))
+}
 
-    // Plan: for every group with a copy in a keep folder, every other copy moves.
+pub fn clean(o: &CleanOpts) -> io::Result<()> {
+    let keep: Vec<PathBuf> = o.keep.iter().map(|k| absolute(k)).collect();
+    let remove: Vec<PathBuf> = o.remove.iter().map(|k| absolute(k)).collect();
+    for d in keep.iter().chain(&remove) {
+        if !d.is_dir() {
+            return Err(err(format!("folder not found: {}", d.display())));
+        }
+    }
+    if let Some(d) = remove.iter().find(|r| keep.contains(r)) {
+        return Err(err(format!("{} is both --keep and --remove", d.display())));
+    }
+    let protect: Vec<PathBuf> = o.protect.iter().map(|p| absolute(p)).collect();
+
+    // Search the keep + remove folders, plus the given folders. Without --remove, copies
+    // can be anywhere, so with no folders given the current folder is searched too.
+    let mut roots: Vec<PathBuf> = keep.iter().chain(&remove).cloned().collect();
+    if o.folders.is_empty() && remove.is_empty() {
+        roots.push(absolute(Path::new(".")));
+    }
+    roots.extend(o.folders.iter().map(|f| absolute(f)));
+    roots.sort();
+    roots.dedup();
+    let roots: Vec<PathBuf> = roots.iter().filter(|r| !is_inside(r, &roots)).cloned().collect();
+
+    let stage = o.stage.as_deref().map(absolute).unwrap_or_else(|| default_stage(&keep[0]));
+    if keep.iter().chain(&remove).any(|d| stage.starts_with(d) || d.starts_with(&stage)) {
+        return Err(err(format!(
+            "stage folder {} is inside a --keep or --remove folder; choose another with --stage",
+            stage.display()
+        )));
+    }
+    let base = stage.parent().unwrap_or(Path::new("/")).to_path_buf();
+
+    let opts = ScanOpts { roots, min_size: o.min_size, exclude: o.exclude.clone() };
+    let groups = scan::find_duplicates(&opts, std::slice::from_ref(&stage));
+
+    // Plan: in every group with a copy in a keep folder, the copies in removable places move.
+    let movable = |p: &Path| {
+        let r = role(p, &keep, &remove);
+        let wanted = if remove.is_empty() { Role::Other } else { Role::Remove };
+        r == wanted && !is_inside(p, &protect) && !in_managed_bundle(p)
+    };
     let mut plan = Vec::new();
+    let mut no_keeper = 0;
     for g in &groups {
-        let Some(keeper) = g.paths.iter().find(|p| is_inside(p, &keep)) else {
+        let Some(keeper) = g.paths.iter().find(|p| role(p, &keep, &remove) == Role::Keep) else {
+            no_keeper += g.paths.iter().any(|p| movable(p)) as usize;
             continue; // no copy in a keep folder -> never touch this group
         };
-        for p in &g.paths {
-            if is_inside(p, &keep) || is_inside(p, &protect) || in_managed_bundle(p) {
-                continue;
-            }
+        for p in g.paths.iter().filter(|p| movable(p)) {
             plan.push(Move { src: p.clone(), keeper: keeper.clone(), size: g.size });
         }
     }
+    if no_keeper > 0 {
+        println!("\n{no_keeper} sets of copies have no copy in a --keep folder; they are left alone.");
+    }
     let total: u64 = plan.iter().map(|m| m.size).sum();
     if plan.is_empty() {
-        eprintln!("\nNothing to move: no copies outside the keep folders.");
+        println!("\nNothing to move: no copies of kept files found in the folders to clean.");
         return Ok(());
     }
 
@@ -87,23 +186,22 @@ pub fn clean(opts: &ScanOpts, keep: &[PathBuf], protect: &[PathBuf], stage: Opti
     }
     let mut by_dir: Vec<_> = by_dir.into_iter().collect();
     by_dir.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-    println!("\nCopies that would be moved, by folder:");
+    println!("\nCopies to move (paths inside {}):", base.display());
     for (d, (n, bytes)) in &by_dir {
-        println!("  {:>9}  {n:>5} files  {}", human(*bytes), d.display());
+        println!("  {:>9}  {n:>5} files  {}", human(*bytes), rel(d, &base).display());
     }
-    println!("\nTotal: {} files, {} -> {}", plan.len(), human(total), stage.display());
+    println!("\nTotal: {}, {}. They go to {}", files_word(plan.len()), human(total), stage.display());
 
-    if dry_run {
+    if o.dry_run {
         println!();
         for m in &plan {
-            println!("WOULD MOVE {}   (kept: {})", m.src.display(), m.keeper.display());
+            println!("WOULD MOVE {}   (kept: {})", rel(&m.src, &base).display(), rel(&m.keeper, &base).display());
         }
         return Ok(());
     }
     let prompt = format!(
-        "\nMove {} files ({}) into {}?\nEach file is checked byte by byte against its kept copy first.",
-        plan.len(),
-        human(total),
+        "\nMove these {} into {}? Nothing is deleted yet.\nEach file is checked byte by byte against its kept copy first.",
+        files_word(plan.len()),
         stage.display()
     );
     if !confirm(&prompt, "YES") {
@@ -111,20 +209,29 @@ pub fn clean(opts: &ScanOpts, keep: &[PathBuf], protect: &[PathBuf], stage: Opti
         return Ok(());
     }
 
-    fs::create_dir_all(&stage)?;
+    execute(&plan, &stage, &base)?;
+    println!("\nNext: look through {}, then free the space with:\n  dupfind purge \"{}\"", stage.display(), stage.display());
+    Ok(())
+}
+
+/// Check each copy byte by byte against its kept twin, move it into `stage`, log it, verify.
+pub(crate) fn execute(plan: &[Move], stage: &Path, base: &Path) -> io::Result<()> {
+    let total: u64 = plan.iter().map(|m| m.size).sum();
+    fs::create_dir_all(stage)?;
     let marker = stage.join(MARKER);
     if !marker.exists() {
         File::create(&marker)?;
     }
-    let stage_dev = fs::metadata(&stage)?.dev();
-    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let log_path = absolute(Path::new(&format!("dupfind-clean-{ts}.log")));
+    let stage_dev = fs::metadata(stage)?.dev();
+    // The log lives with the files it describes; a unique name per run.
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    let log_path = stage.join(format!("dupfind-log-{}-{:09}.tsv", ts.as_secs(), ts.subsec_nanos()));
     let mut log = BufWriter::new(File::options().write(true).create_new(true).open(&log_path)?);
     writeln!(log, "status\tsource\tstaged_as\tkept_copy")?;
 
     let (mut moved, mut moved_bytes, mut skipped) = (Vec::new(), 0u64, 0usize);
     for (i, m) in plan.iter().enumerate() {
-        let dest = stage.join(staged_name(&m.src, &roots));
+        let dest = stage.join(rel(&m.src, base));
         let reason = if fs::metadata(&m.src).map(|md| md.dev() != stage_dev).unwrap_or(true) {
             Some("missing or on a different drive than the stage folder")
         } else if !same_content(&m.src, &m.keeper).unwrap_or(false) {
@@ -135,13 +242,17 @@ pub fn clean(opts: &ScanOpts, keep: &[PathBuf], protect: &[PathBuf], stage: Opti
             None
         };
         if let Some(reason) = reason {
-            eprintln!("\nSKIP ({reason}): {}", m.src.display());
+            eprintln!("\nSKIP ({reason}): {}", rel(&m.src, base).display());
             writeln!(log, "SKIP\t{}\t\t{}", m.src.display(), m.keeper.display())?;
             skipped += 1;
             continue;
         }
-        fs::create_dir_all(dest.parent().unwrap())?;
-        fs::rename(&m.src, &dest)?;
+        if let Err(e) = fs::create_dir_all(dest.parent().unwrap()).and_then(|_| fs::rename(&m.src, &dest)) {
+            eprintln!("\nSKIP (could not move: {e}): {}", rel(&m.src, base).display());
+            writeln!(log, "SKIP\t{}\t\t{}", m.src.display(), m.keeper.display())?;
+            skipped += 1;
+            continue;
+        }
         writeln!(log, "MOVED\t{}\t{}\t{}", m.src.display(), dest.display(), m.keeper.display())?;
         moved_bytes += m.size;
         moved.push((dest, &m.keeper));
@@ -158,10 +269,9 @@ pub fn clean(opts: &ScanOpts, keep: &[PathBuf], protect: &[PathBuf], stage: Opti
             !(a.is_ok() && b.is_ok() && a.unwrap().len() == b.unwrap().len())
         })
         .count();
-    println!("\nMoved {} files ({}), skipped {skipped}.", moved.len(), human(moved_bytes));
+    println!("\nMoved {} ({}), skipped {skipped}.", files_word(moved.len()), human(moved_bytes));
     println!("Verified: {} of {} moved files have their kept copy in place.", moved.len() - broken, moved.len());
     println!("Log: {}", log_path.display());
-    println!("\nNext: check {}, then free the space with:\n  dupfind purge \"{}\"", stage.display(), stage.display());
     Ok(())
 }
 
@@ -175,14 +285,17 @@ pub fn purge(stage: &Path) -> io::Result<()> {
     }
     let (mut files, mut bytes) = (0usize, 0u64);
     for e in jwalk::WalkDir::new(&stage).skip_hidden(false).into_iter().flatten() {
-        if e.file_type().is_file() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        // Count only the moved copies, not dupfind's own marker and logs.
+        if e.file_type().is_file() && name != MARKER && !name.starts_with("dupfind-log-") {
             files += 1;
             bytes += e.metadata().map(|m| m.len()).unwrap_or(0);
         }
     }
     let prompt = format!(
-        "\nPermanently delete {} and everything in it: {files} files, {}?\nThis does not go to the Trash and cannot be undone.",
+        "\nPermanently delete {} and everything in it: {}, {}?\nThis does not go to the Trash and cannot be undone.",
         stage.display(),
+        files_word(files),
         human(bytes)
     );
     if !confirm(&prompt, "DELETE") {
@@ -190,6 +303,6 @@ pub fn purge(stage: &Path) -> io::Result<()> {
         return Ok(());
     }
     fs::remove_dir_all(&stage)?;
-    println!("Deleted {} ({files} files, {} freed).", stage.display(), human(bytes));
+    println!("Deleted {} ({}, {} freed).", stage.display(), files_word(files), human(bytes));
     Ok(())
 }
