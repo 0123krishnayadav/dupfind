@@ -42,13 +42,41 @@ Nothing moves without `YES`, and nothing is deleted without `DELETE` (capitals o
 
 ## Install
 
-Needs [Rust](https://rustup.rs).
+### On a new Mac
 
 ```bash
+# 1. Apple's developer tools (Rust needs them to build)
+xcode-select --install
+
+# 2. Rust: press Enter to accept the defaults, then open a new Terminal window
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+
+# 3. Get the code and install dupfind
+git clone git@github.com:0123krishnayadav/dupfind.git
+cd dupfind
+cargo install --path .
+
+# 4. Check it works
+dupfind --help
+```
+
+The first build takes about a minute. `cargo install` puts `dupfind` in `~/.cargo/bin`, so it runs from any folder.
+
+Step 3 clones over SSH, which needs an SSH key added to your GitHub account. Without one, clone over HTTPS instead: `git clone https://github.com/0123krishnayadav/dupfind.git`.
+
+### Update to the latest version
+
+```bash
+cd dupfind
+git pull
 cargo install --path .
 ```
 
-This puts `dupfind` in `~/.cargo/bin`, so it runs from any folder.
+### Uninstall
+
+```bash
+cargo uninstall dupfind
+```
 
 ## Commands, for scripts and advanced use
 
