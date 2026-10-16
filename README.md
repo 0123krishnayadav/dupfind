@@ -195,7 +195,7 @@ Hashes from stages 2 and 3 are saved in a cache. The next scan still walks every
 cargo test
 ```
 
-Unit tests sit at the bottom of each file in `src/`. `tests/cli.rs` runs the real `dupfind` binary on temporary folders and answers its prompts, covering scan, the hash cache, clean, purge, empty-dirs and guided mode. Tests point `HOME` at a temporary folder, so they never touch your files or cache. GitHub Actions runs them on every push.
+Unit tests sit at the bottom of each file in `src/`. `tests/cli.rs` runs the real `dupfind` binary on temporary folders and answers its prompts, covering scan, the hash cache, clean, purge, empty-dirs and guided mode. Tests point `HOME` at a temporary folder, so they never touch your files or cache. Run them before every commit.
 
 Add a test for every change, and write it before the code.
 
