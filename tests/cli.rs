@@ -89,6 +89,14 @@ fn photos(e: &Env) {
     e.file("Elsewhere/lonely.jpg", b"no twin");
 }
 
+#[test]
+fn version_matches_cargo_toml() {
+    let e = Env::new("version");
+    let o = e.run(&["--version"], "");
+    assert!(o.ok);
+    assert_eq!(o.stdout.trim(), format!("dupfind {}", env!("CARGO_PKG_VERSION")));
+}
+
 // ---------- scan ----------
 
 #[test]
