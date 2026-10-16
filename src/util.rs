@@ -95,3 +95,119 @@ fn read_full(f: &mut File, buf: &mut [u8]) -> io::Result<usize> {
     }
     Ok(filled)
 }
+
+/// A fresh empty folder for a test, removed when dropped.
+#[cfg(test)]
+pub struct TestDir(pub PathBuf);
+
+#[cfg(test)]
+impl TestDir {
+    pub fn new(name: &str) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("dupfind-test-{}-{name}-{n}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(&dir).unwrap();
+        TestDir(std::fs::canonicalize(&dir).unwrap())
+    }
+
+    /// Write `content` to `rel`, creating parent folders.
+    pub fn file(&self, rel: &str, content: &[u8]) -> PathBuf {
+        let p = self.0.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, content).unwrap();
+        p
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_units() {
+        assert_eq!(parse_size("1"), Ok(1));
+        assert_eq!(parse_size("4K"), Ok(4096));
+        assert_eq!(parse_size("4kb"), Ok(4096));
+        assert_eq!(parse_size("1M"), Ok(1 << 20));
+        assert_eq!(parse_size(" 2G "), Ok(2 << 30));
+        assert_eq!(parse_size("1.5K"), Ok(1536));
+        assert!(parse_size("abc").is_err());
+        assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn human_sizes() {
+        assert_eq!(human(0), "0.0 B");
+        assert_eq!(human(1023), "1023.0 B");
+        assert_eq!(human(1024), "1.0 KB");
+        assert_eq!(human(1536), "1.5 KB");
+        assert_eq!(human(1 << 30), "1.0 GB");
+        assert_eq!(human(1 << 50), "1.0 PB");
+    }
+
+    #[test]
+    fn files_word_plural() {
+        assert_eq!(files_word(0), "0 files");
+        assert_eq!(files_word(1), "1 file");
+        assert_eq!(files_word(2), "2 files");
+    }
+
+    #[test]
+    fn metadata_and_bundles() {
+        assert!(is_metadata(".DS_Store"));
+        assert!(is_metadata("._photo.jpg"));
+        assert!(!is_metadata("photo.jpg"));
+        assert!(!is_metadata(".hidden"));
+        assert!(is_managed_bundle(".git"));
+        assert!(is_managed_bundle("Photos Library.photoslibrary"));
+        assert!(is_managed_bundle("Safari.app"));
+        assert!(!is_managed_bundle("apps"));
+        assert!(!is_managed_bundle("git"));
+    }
+
+    #[test]
+    fn inside_is_strict() {
+        let dirs = vec![PathBuf::from("/a/b")];
+        assert!(is_inside(Path::new("/a/b/c"), &dirs));
+        assert!(!is_inside(Path::new("/a/b"), &dirs));
+        assert!(!is_inside(Path::new("/a/bc"), &dirs));
+        assert!(!is_inside(Path::new("/a"), &dirs));
+    }
+
+    #[test]
+    fn absolute_resolves_missing_paths() {
+        let t = TestDir::new("abs");
+        assert_eq!(absolute(&t.0), t.0);
+        assert_eq!(absolute(&t.0.join("missing/x")), t.0.join("missing/x"));
+        std::fs::create_dir(t.0.join("sub")).unwrap();
+        assert_eq!(absolute(&t.0.join("sub/../y")), t.0.join("y"));
+    }
+
+    #[test]
+    fn same_content_compares_bytes() {
+        let t = TestDir::new("same");
+        let big: Vec<u8> = (0..3_000_000u32).map(|i| i as u8).collect();
+        let mut changed = big.clone();
+        changed[2_500_000] ^= 1;
+        let a = t.file("a", &big);
+        let b = t.file("b", &big);
+        let c = t.file("c", &changed);
+        let d = t.file("d", &big[..100]);
+        let e = t.file("e", b"");
+        let f = t.file("f", b"");
+        assert!(same_content(&a, &b).unwrap());
+        assert!(!same_content(&a, &c).unwrap());
+        assert!(!same_content(&a, &d).unwrap());
+        assert!(same_content(&e, &f).unwrap());
+        assert!(same_content(&a, &t.0.join("missing")).is_err());
+    }
+}

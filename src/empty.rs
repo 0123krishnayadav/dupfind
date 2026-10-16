@@ -103,3 +103,60 @@ pub fn empty_dirs(roots: &[PathBuf], metadata_ok: bool, dry_run: bool) -> io::Re
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::TestDir;
+
+    fn found(t: &TestDir, metadata_ok: bool) -> Vec<String> {
+        let mut f = Vec::new();
+        scan(&t.0, metadata_ok, &mut f);
+        f.sort();
+        f.iter().map(|p| p.strip_prefix(&t.0).unwrap().display().to_string()).collect()
+    }
+
+    #[test]
+    fn finds_topmost_empty_folders() {
+        let t = TestDir::new("empty-basic");
+        t.file("full/a", b"x");
+        fs::create_dir_all(t.0.join("full/empty")).unwrap();
+        fs::create_dir_all(t.0.join("nested/a/b/c")).unwrap();
+        assert_eq!(found(&t, false), ["full/empty", "nested"]);
+    }
+
+    #[test]
+    fn hidden_files_count_unless_metadata_allowed() {
+        let t = TestDir::new("empty-meta");
+        t.file("ds/.DS_Store", b"x");
+        t.file("hidden/.secret", b"x");
+        t.file("keep/file", b"x");
+        assert!(found(&t, false).is_empty());
+        assert_eq!(found(&t, true), ["ds"]);
+    }
+
+    #[test]
+    fn system_folders_and_bundles_stay() {
+        let t = TestDir::new("empty-system");
+        t.file("keep/file", b"x");
+        for d in [".Trashes", ".Spotlight-V100", "Foo.app", "repo/.git"] {
+            fs::create_dir_all(t.0.join(d)).unwrap();
+        }
+        assert!(found(&t, false).is_empty());
+    }
+
+    #[test]
+    fn remove_deletes_metadata_but_refuses_real_files() {
+        let t = TestDir::new("empty-remove");
+        t.file("m/.DS_Store", b"x");
+        t.file("m/sub/._y", b"x");
+        remove(&t.0.join("m"), true).unwrap();
+        assert!(!t.0.join("m").exists());
+
+        t.file("r/real.txt", b"x");
+        assert!(remove(&t.0.join("r"), true).is_err());
+        assert!(t.0.join("r/real.txt").exists());
+        t.file("s/.DS_Store", b"x");
+        assert!(remove(&t.0.join("s"), false).is_err());
+    }
+}

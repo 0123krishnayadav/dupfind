@@ -98,6 +98,7 @@ dupfind scan ~ --min-size 1M --csv home.csv
 | `--min-size 1M` | Skips smaller files: much faster |
 | `--csv <file>` | Saves every duplicate to a CSV (never overwrites one) |
 | `--exclude <folder>` | Skips a folder (repeatable) |
+| `--no-cache` | Reads every file again instead of reusing hashes from earlier scans |
 
 ### `dupfind clean`: move the extra copies into `_TO_DELETE`
 
@@ -136,6 +137,10 @@ dupfind purge /Volumes/T7/_TO_DELETE      # or just `dupfind purge` from /Volume
 
 Type `DELETE` to confirm. This skips the Trash and cannot be undone. It refuses any folder that `clean` did not create, which `clean` marks with a hidden `.dupfind-stage` file.
 
+### `dupfind clear-cache`: forget saved hashes
+
+Scans remember each file's hash in `~/Library/Caches/dupfind/hashes.bin`, so the next scan only reads files that are new or changed. This removes that file; the next scan reads everything again. It is safe to delete at any time.
+
 ### `dupfind empty-dirs`: remove empty folders
 
 ```bash
@@ -172,14 +177,27 @@ Duplicates are found in three stages, each only looking at files that survived t
 
 Hashing uses xxh3-128 on all CPU cores. Hard links count as one file.
 
+Hashes from stages 2 and 3 are saved in a cache. The next scan still walks every folder, which is how it finds new, moved and deleted files, but it reuses a saved hash when the file's size, inode, modified time and change time are all unchanged. A rescan of a mostly unchanged drive therefore takes about as long as the walk alone. A wrong cache entry cannot cause data loss, because `clean` compares each file byte by byte with its kept copy before moving it.
+
 | File | Contents |
 | --- | --- |
 | `src/main.rs` | Command-line interface |
 | `src/wizard.rs` | Guided mode |
 | `src/scan.rs` | Finding duplicates, reports, CSV |
+| `src/cache.rs` | Hash cache between scans |
 | `src/clean.rs` | `clean` and `purge` |
 | `src/empty.rs` | `empty-dirs` |
 | `src/util.rs` | Shared helpers |
+
+## Development
+
+```bash
+cargo test
+```
+
+Unit tests sit at the bottom of each file in `src/`. `tests/cli.rs` runs the real `dupfind` binary on temporary folders and answers its prompts, covering scan, the hash cache, clean, purge, empty-dirs and guided mode. Tests point `HOME` at a temporary folder, so they never touch your files or cache. GitHub Actions runs them on every push.
+
+Add a test for every change, and write it before the code.
 
 ## License
 

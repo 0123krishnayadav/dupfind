@@ -5,7 +5,9 @@
 //!   dupfind clean      move copies that have a twin in a --keep folder into a stage folder
 //!   dupfind purge      permanently delete a stage folder created by `clean`
 //!   dupfind empty-dirs remove empty folders
+//!   dupfind clear-cache forget the file hashes saved by earlier scans
 
+mod cache;
 mod clean;
 mod empty;
 mod scan;
@@ -72,6 +74,9 @@ enum Cmd {
         #[arg(long)]
         dry_run: bool,
     },
+
+    /// Forget the file hashes saved by earlier scans, so the next scan reads every file again.
+    ClearCache,
 }
 
 /// After a scan typed by a person, offer to clean up right away.
@@ -112,6 +117,7 @@ fn main() {
         Cmd::Clean(o) => clean::clean(o),
         Cmd::Purge { stage } => clean::purge(stage),
         Cmd::EmptyDirs { roots, include_metadata, dry_run } => empty::empty_dirs(roots, *include_metadata, *dry_run),
+        Cmd::ClearCache => cache::clear(),
     };
     if let Err(e) = result {
         eprintln!("error: {e}");

@@ -149,7 +149,7 @@ pub fn clean(o: &CleanOpts) -> io::Result<()> {
     }
     let base = stage.parent().unwrap_or(Path::new("/")).to_path_buf();
 
-    let opts = ScanOpts { roots, min_size: o.min_size, exclude: o.exclude.clone() };
+    let opts = ScanOpts { roots, min_size: o.min_size, exclude: o.exclude.clone(), no_cache: false };
     let groups = scan::find_duplicates(&opts, std::slice::from_ref(&stage));
 
     // Plan: in every group with a copy in a keep folder, the copies in removable places move.
@@ -305,4 +305,117 @@ pub fn purge(stage: &Path) -> io::Result<()> {
     fs::remove_dir_all(&stage)?;
     println!("Deleted {} ({}, {} freed).", stage.display(), files_word(files), human(bytes));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::util::TestDir;
+
+    fn p(s: &str) -> PathBuf {
+        PathBuf::from(s)
+    }
+
+    #[test]
+    fn deepest_named_folder_decides_role() {
+        let keep = [p("/d/A")];
+        let remove = [p("/d/A/dups")];
+        assert!(role(Path::new("/d/A/x"), &keep, &remove) == Role::Keep);
+        assert!(role(Path::new("/d/A/dups/x"), &keep, &remove) == Role::Remove);
+        assert!(role(Path::new("/d/B/x"), &keep, &remove) == Role::Other);
+        assert!(role(Path::new("/d/AB/x"), &keep, &remove) == Role::Other);
+        // A keep folder inside a remove folder wins too.
+        assert!(role(Path::new("/r/k/x"), &[p("/r/k")], &[p("/r")]) == Role::Keep);
+        assert!(role(Path::new("/r/x"), &[p("/r/k")], &[p("/r")]) == Role::Remove);
+    }
+
+    #[test]
+    fn managed_bundles_detected_anywhere_in_path() {
+        assert!(in_managed_bundle(Path::new("/x/Lib.photoslibrary/originals/a.jpg")));
+        assert!(in_managed_bundle(Path::new("/x/repo/.git/objects/ab")));
+        assert!(in_managed_bundle(Path::new("/Applications/Foo.app/Contents/x")));
+        assert!(!in_managed_bundle(Path::new("/x/apps/a.jpg")));
+    }
+
+    #[test]
+    fn rel_strips_base_or_root() {
+        assert_eq!(rel(Path::new("/v/T7/a/b"), Path::new("/v/T7")), Path::new("a/b"));
+        assert_eq!(rel(Path::new("/other/a"), Path::new("/v/T7")), Path::new("other/a"));
+    }
+
+    #[test]
+    fn default_stage_in_home() {
+        let home = PathBuf::from(std::env::var_os("HOME").unwrap());
+        assert_eq!(default_stage(&home.join("Pictures/x")), home.join(STAGE_NAME));
+    }
+
+    #[test]
+    fn execute_moves_verified_copies_and_skips_changed_ones() {
+        let t = TestDir::new("clean-exec");
+        let keeper = t.file("keep/a.jpg", b"photo");
+        let copy = t.file("dups/a.jpg", b"photo");
+        let changed = t.file("dups/b.jpg", b"PHOTO"); // differs from its "keeper"
+        let gone = t.0.join("dups/missing.jpg");
+        let stage = t.0.join("_TO_DELETE");
+        let plan = vec![
+            Move { src: copy.clone(), keeper: keeper.clone(), size: 5 },
+            Move { src: changed.clone(), keeper: keeper.clone(), size: 5 },
+            Move { src: gone, keeper: keeper.clone(), size: 5 },
+        ];
+        execute(&plan, &stage, &t.0).unwrap();
+
+        assert!(keeper.exists(), "kept copy must stay");
+        assert!(!copy.exists());
+        assert_eq!(fs::read(stage.join("dups/a.jpg")).unwrap(), b"photo");
+        assert!(changed.exists(), "a file that no longer matches must not move");
+        assert!(stage.join(MARKER).is_file());
+
+        let log = fs::read_dir(&stage)
+            .unwrap()
+            .flatten()
+            .find(|e| e.file_name().to_string_lossy().starts_with("dupfind-log-"))
+            .unwrap();
+        let log = fs::read_to_string(log.path()).unwrap();
+        assert_eq!(log.lines().filter(|l| l.starts_with("MOVED")).count(), 1);
+        assert_eq!(log.lines().filter(|l| l.starts_with("SKIP")).count(), 2);
+    }
+
+    #[test]
+    fn execute_never_overwrites_in_stage() {
+        let t = TestDir::new("clean-exist");
+        let keeper = t.file("keep/a", b"x");
+        let copy = t.file("dups/a", b"x");
+        let stage = t.0.join("_TO_DELETE");
+        t.file("_TO_DELETE/dups/a", b"earlier");
+        execute(&[Move { src: copy.clone(), keeper, size: 1 }], &stage, &t.0).unwrap();
+        assert!(copy.exists());
+        assert_eq!(fs::read(stage.join("dups/a")).unwrap(), b"earlier");
+    }
+
+    #[test]
+    fn purge_refuses_folders_clean_did_not_make() {
+        let t = TestDir::new("clean-purge");
+        t.file("stuff/a", b"precious");
+        assert!(purge(&t.0.join("stuff")).is_err());
+        assert!(t.0.join("stuff/a").exists());
+    }
+
+    #[test]
+    fn clean_rejects_bad_folders() {
+        let t = TestDir::new("clean-bad");
+        t.file("A/x", b"1");
+        let o = |keep: &str, remove: &str, stage: &str| CleanOpts {
+            folders: vec![],
+            keep: vec![t.0.join(keep)],
+            remove: if remove.is_empty() { vec![] } else { vec![t.0.join(remove)] },
+            protect: vec![],
+            stage: Some(t.0.join(stage)),
+            min_size: 1,
+            exclude: vec![],
+            dry_run: true,
+        };
+        assert!(clean(&o("missing", "", "S")).is_err());
+        assert!(clean(&o("A", "A", "S")).is_err());
+        assert!(clean(&o("A", "", "A/S")).is_err());
+    }
 }

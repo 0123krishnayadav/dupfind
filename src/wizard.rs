@@ -70,7 +70,7 @@ pub fn run() -> io::Result<()> {
         1
     };
     println!();
-    let opts = ScanOpts { roots: vec![folder.clone()], min_size, exclude: vec![] };
+    let opts = ScanOpts { roots: vec![folder.clone()], min_size, exclude: vec![], no_cache: false };
     let groups = scan::find_duplicates(&opts, &[]);
     review(&groups, &folder)
 }
@@ -226,4 +226,91 @@ fn finish(stage: &Path, folder: &Path) -> io::Result<()> {
     }
     println!("\nDone.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn g(size: u64, paths: &[&str]) -> Group {
+        Group { size, paths: paths.iter().map(PathBuf::from).collect() }
+    }
+
+    #[test]
+    fn typed_path_handles_finder_drag() {
+        assert_eq!(typed_path("/Volumes/T7/Trip\\ \\(1\\) "), PathBuf::from("/Volumes/T7/Trip (1)"));
+        assert_eq!(typed_path("'/a b/c'"), PathBuf::from("/a b/c"));
+        assert_eq!(typed_path("\"/a b\""), PathBuf::from("/a b"));
+        assert_eq!(typed_path("/plain"), PathBuf::from("/plain"));
+    }
+
+    #[test]
+    fn parse_choice_accepts_numbers_in_range() {
+        assert_eq!(parse_choice("2", 3), Some(vec![2]));
+        assert_eq!(parse_choice("3,1", 3), Some(vec![1, 3]));
+        assert_eq!(parse_choice("1 3 1", 3), Some(vec![1, 3]));
+        assert_eq!(parse_choice("4", 3), None);
+        assert_eq!(parse_choice("0", 3), None);
+        assert_eq!(parse_choice("q", 3), None);
+        assert_eq!(parse_choice("1,q", 3), None);
+        assert_eq!(parse_choice("", 3), None);
+    }
+
+    #[test]
+    fn is_yes_defaults_to_yes() {
+        assert!(is_yes(""));
+        assert!(is_yes("y"));
+        assert!(!is_yes("n"));
+        assert!(!is_yes("No"));
+    }
+
+    #[test]
+    fn original_is_shortest_name() {
+        let ps = [PathBuf::from("/d/x (1).jpg"), PathBuf::from("/d/x.jpg"), PathBuf::from("/d/x copy.jpg")];
+        assert_eq!(original(ps.iter()), &PathBuf::from("/d/x.jpg"));
+    }
+
+    #[test]
+    fn sets_group_by_folders_biggest_first() {
+        let groups = [g(10, &["/a/1", "/b/1"]), g(1, &["/a/2", "/b/2"]), g(5, &["/c/x", "/c/x copy"])];
+        let sets = build_sets(&groups);
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0].dirs, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(sets[0].wasted, 11);
+        assert_eq!(sets[1].dirs, vec![PathBuf::from("/c")]);
+    }
+
+    #[test]
+    fn moves_for_keeps_chosen_folders() {
+        let groups = [g(3, &["/a/f", "/b/f", "/c/f"])];
+        let sets = build_sets(&groups);
+        let (a, b) = (PathBuf::from("/a"), PathBuf::from("/b"));
+
+        let m = moves_for(&sets[0], &[&a]);
+        let srcs: Vec<_> = m.iter().map(|m| m.src.to_str().unwrap()).collect();
+        assert_eq!(srcs, ["/b/f", "/c/f"]);
+        assert!(m.iter().all(|m| m.keeper == PathBuf::from("/a/f")));
+
+        let m = moves_for(&sets[0], &[&a, &b]);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].src, PathBuf::from("/c/f"));
+    }
+
+    #[test]
+    fn moves_for_single_folder_keeps_one_copy() {
+        let groups = [g(3, &["/d/x.jpg", "/d/x (1).jpg", "/d/x copy.jpg"])];
+        let sets = build_sets(&groups);
+        let d = PathBuf::from("/d");
+        let m = moves_for(&sets[0], &[&d]);
+        assert_eq!(m.len(), 2);
+        assert!(m.iter().all(|m| m.keeper == PathBuf::from("/d/x.jpg") && m.src != m.keeper));
+    }
+
+    #[test]
+    fn moves_for_never_touches_bundles() {
+        let groups = [g(3, &["/a/f", "/L.photoslibrary/f"])];
+        let sets = build_sets(&groups);
+        let a = PathBuf::from("/a");
+        assert!(moves_for(&sets[0], &[&a]).is_empty());
+    }
 }
